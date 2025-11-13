@@ -1,0 +1,132 @@
+name: Greyhound DOCX Extractor Pipeline
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pipeline
+        run: python main.py
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs
+          path: |
+            outputs/*.xlsx
+            outputs/*.csv
+            outputs/logs/*.txt
+          if-no-files-found: warn
+
+      - name: Compute run summary
+        id: summary
+        run: |
+          python - << 'PY'
+          import glob, os
+          import pandas as pd
+
+          # Count files
+          files = sorted(glob.glob("data/*.docx"))
+          num_files = len(files)
+
+          # Paths
+          excel_path = "outputs/all_dogs_master.xlsx"
+          csv_path = "outputs/all_dogs_master.csv"
+
+          # Dog summary rows
+          if os.path.exists(csv_path):
+            summary_df = pd.read_csv(csv_path, dtype=str).fillna("")
+          else:
+            summary_df = pd.DataFrame()
+
+          num_dog_rows = len(summary_df.index) if not summary_df.empty else 0
+
+          # History rows
+          if os.path.exists(excel_path):
+            history_df = pd.read_excel(excel_path, sheet_name="Race_History", dtype=str).fillna("")
+          else:
+            history_df = pd.DataFrame()
+          num_history_rows = len(history_df.index) if not history_df.empty else 0
+
+          # % of dogs with Avg_Speed_km_h
+          pct_speed = 0.0
+          if not summary_df.empty and "Avg_Speed_km_h" in summary_df.columns and num_dog_rows > 0:
+            non_empty = (summary_df["Avg_Speed_km_h"].astype(str).str.strip() != "").sum()
+            pct_speed = (non_empty / num_dog_rows) * 100.0
+
+          # Log paths
+          parse_audit = "outputs/logs/parse_audit.txt"
+          validation_report = "outputs/logs/validation_report.txt"
+          consistency_check = "outputs/logs/consistency_check.txt"
+
+          print(f"files={num_files}")
+          print(f"dogs={num_dog_rows}")
+          print(f"history={num_history_rows}")
+          print(f"pct_speed={pct_speed:.2f}")
+          print(f"excel={excel_path}")
+          print(f"csv={csv_path}")
+          print(f"audit={parse_audit}")
+          print(f"validation={validation_report}")
+          print(f"consistency={consistency_check}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+            fh.write(f"files={num_files}\n")
+            fh.write(f"dogs={num_dog_rows}\n")
+            fh.write(f"history={num_history_rows}\n")
+            fh.write(f"pct_speed={pct_speed:.2f}\n")
+            fh.write(f"excel={excel_path}\n")
+            fh.write(f"csv={csv_path}\n")
+            fh.write(f"audit={parse_audit}\n")
+            fh.write(f"validation={validation_report}\n")
+            fh.write(f"consistency={consistency_check}\n")
+          PY
+
+      - name: Post PR comment with summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `
+            Pipeline Summary
+
+            - Number of files processed: ${core.getInput('files') || '${{ steps.summary.outputs.files }}'}
+            - Number of dog summary rows: ${core.getInput('dogs') || '${{ steps.summary.outputs.dogs }}'}
+            - Number of history rows: ${core.getInput('history') || '${{ steps.summary.outputs.history }}'}
+            - % of dogs with valid speed data: ${core.getInput('pct_speed') || '${{ steps.summary.outputs.pct_speed }}'}%
+
+            Outputs:
+            - Excel: ${{ steps.summary.outputs.excel }}
+            - CSV: ${{ steps.summary.outputs.csv }}
+
+            Logs:
+            - Parse Audit: ${{ steps.summary.outputs.audit }}
+            - Validation Report: ${{ steps.summary.outputs.validation }}
+            - Consistency Check: ${{ steps.summary.outputs.consistency }}
+            `;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body
+            });
