@@ -1,247 +1,136 @@
+# src/parse_data.py
+
 import re
 from datetime import datetime
+from summary_utils import normalize_summary_fields
+from columns import SUMMARY_COLUMNS
 
-import pandas as pd
-from docx import Document
-
-from src.summary_utils import normalize_summary_fields
-from src.parse_history import parse_history_blocks
-
-
-def read_docx_tables(path: str):
+def parse_meeting_info(paragraphs):
     """
-    Read a DOCX file and return a linear list of blocks:
-    - {"type": "paragraph", "text": str}
-    - {"type": "table", "rows": [[cell, ...], ...]}
-    Order is preserved exactly as in the document.
+    Extract meeting-level fields from the DOCX paragraphs.
+    Returns a dict with Race_Date, Track, Race_No, Race_Name, Distance_m, Race_Grade, etc.
     """
-    doc = Document(path)
-    blocks = []
+    meeting_info = {}
+    text = " ".join(p.text for p in paragraphs if p.text.strip())
+    
+    # Example regex patterns (customize as needed):
+    # Date: look for dd/mm/yyyy
+    date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', text)
+    if date_match:
+        raw_date = date_match.group(1)
+        # Convert to YYYY-MM-DD
+        meeting_info["Race_Date"] = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%Y-%m-%d")
+    # Track: assume a known track name appears after date
+    track_match = re.search(r'\d{1,2}/\d{1,2}/\d{4}\s+([A-Za-z]+)', text)
+    if track_match:
+        meeting_info["Track"] = track_match.group(1)
+    # Race Number and Name: typically near top as "Race X. NAME"
+    race_match = re.search(r'Race\s*No\.?\s*(\d+).*?Name:\s*([^0-9]+)', text)
+    if race_match:
+        meeting_info["Race_No"] = int(race_match.group(1))
+        meeting_info["Race_Name"] = race_match.group(2).strip()
+    # Distance: look for number followed by "m"
+    dist_match = re.search(r'Distance\s*(\d+)\s*m', text)
+    if dist_match:
+        meeting_info["Distance_m"] = int(dist_match.group(1))
+    # Grade: e.g. "GR 5/6 Race"
+    grade_match = re.search(r'GR\s*([\d/]+)', text)
+    if grade_match:
+        meeting_info["Race_Grade"] = grade_match.group(1)
+    # Race time (if given as time of day, e.g. "Race Time 14:30")
+    time_match = re.search(r'Race Time\s*([0-9]{1,2}:[0-9]{2})', text)
+    if time_match:
+        meeting_info["Race_Time"] = time_match.group(1)  # already HH:MM
+    return meeting_info
 
-    # paragraphs
-    for p in doc.paragraphs:
-        t = p.text.strip()
-        if t:
-            blocks.append({"type": "paragraph", "text": t})
-
-    # tables
-    for tbl in doc.tables:
-        rows = []
-        for r in tbl.rows:
-            cells = [c.text.strip() for c in r.cells]
-            # skip fully empty rows
-            if any(x for x in cells):
-                rows.append(cells)
-        if rows:
-            blocks.append({"type": "table", "rows": rows})
-
-    return blocks
-
-
-def parse_meeting_header(blocks, source_file: str):
+def parse_dog_section(dog_text):
     """
-    Extract meeting-level metadata from the paragraph blocks.
-    Outputs keys that feed straight into the 60-column schema:
-    Track, Race_Date, Race_No, Distance_m, Race_Name, Race_Grade, Data_Source_File.
+    Parse a block of text corresponding to one dog in the race summary.
+    Returns a dict of extracted fields for that dog.
     """
-    info = {
-        "Track": "",
-        "Race_Date": "",
-        "Race_No": "",
-        "Distance_m": "",
-        "Race_Name": "",
-        "Race_Grade": "",
-        "Data_Source_File": source_file,
-    }
+    dog_info = {}
+    # Dog Name is usually the first line (all caps, may include spaces)
+    lines = [line.strip() for line in dog_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return dog_info
+    
+    # First line should be the dog name
+    dog_info["Dog_Name"] = lines[0].strip().title()
+    
+    # Attempt to parse the line with weight, age, colour, box, sex, trainer, career stats
+    # e.g. "0kg (4) bl 2 D TrainerName Horse: 7-22-56 12%-51%"
+    pattern = re.compile(
+        r'(?P<weight>\d+kg)?\s*\((?P<age>\d+)\)\s+'
+        r'(?P<colour>[A-Za-z/]+)\s+'
+        r'(?P<box>\d+)\s+'
+        r'(?P<sex>[DB])\s+'
+        r'(?P<trainer>[A-Za-z ]+?)\s+Horse:\s+'
+        r'(?P<stats>(\d+-)+\d+)\s+'
+        r'(?P<win_pct>\d+)%-(?P<place_pct>\d+)%'
+    )
+    detail_line = lines[1] if len(lines) > 1 else ""
+    m = pattern.search(detail_line)
+    if m:
+        dog_info["Age"] = int(m.group("age"))
+        dog_info["ColourCode"] = m.group("colour")
+        dog_info["Box"] = int(m.group("box"))
+        dog_info["Sex"] = m.group("sex")
+        dog_info["Trainer"] = m.group("trainer").strip().title()
+        # Parse career stats
+        stats_str = m.group("stats")  # e.g. "7-22-56"
+        stats_parts = stats_str.split('-')
+        if len(stats_parts) == 3:
+            dog_info["Career_Wins"] = int(stats_parts[0])
+            dog_info["Career_Seconds"] = int(stats_parts[1])
+            dog_info["Career_Thirds"] = 0  # If not provided, default 0
+            dog_info["Career_Starters"] = int(stats_parts[2])
+        dog_info["Win_Percent"] = int(m.group("win_pct"))
+        dog_info["Place_Percent"] = int(m.group("place_pct"))
+    # Owner: often on the line after trainer/stats
+    for line in lines:
+        if line.startswith("Owner:"):
+            owner_name = line.split("Owner:")[1].strip()
+            dog_info["Owner"] = owner_name.title()
+            break
+    
+    # Prize and odds for this race (from a line like "Prize $X Odds Y Trainer ...")
+    race_line = next((l for l in lines if "Prize" in l and "Odds" in l), "")
+    prize_match = re.search(r'Prize\s*\$(?P<prize>\d+)', race_line)
+    if prize_match:
+        dog_info["PrizeMoneyWon"] = int(prize_match.group("prize"))
+    odds_match = re.search(r'Odds\s*([\d\.]+)', race_line)
+    if odds_match:
+        dog_info["Odds"] = float(odds_match.group(1))
+    return dog_info
 
-    for b in blocks:
-        if b["type"] != "paragraph":
+def parse_data(doc):
+    """
+    Main function to parse a DOCX race file and extract summary fields.
+    Returns a list of dicts, one per dog, with keys from SUMMARY_COLUMNS.
+    """
+    from docx import Document
+    document = Document(doc)
+    paragraphs = document.paragraphs
+    
+    # Extract meeting-level info
+    meeting_info = parse_meeting_info(paragraphs)
+    
+    records = []
+    # Split the document into sections for each dog (based on known markers, e.g. dog names or sequence numbers)
+    text = "\n".join(p.text for p in paragraphs)
+    dog_sections = re.split(r'\n\d+\.\s*\n', text)  # split on patterns like "1." "2." etc.
+    for section in dog_sections:
+        section = section.strip()
+        if not section:
             continue
-
-        t = b["text"]
-
-        # Race number, e.g. "Race 1" / "Race: 1"
-        m = re.search(r"Race\s*No\.?\s*(\d+)", t, re.I)
-        if not m:
-            m = re.search(r"\bRace\s*[:#]?\s*(\d{1,2})\b", t, re.I)
-        if m:
-            info["Race_No"] = m.group(1).strip()
-
-        # Date, e.g. "15 Oct 25"
-        m = re.search(r"(\d{1,2}\s*[A-Za-z]{3}\s*\d{2,4})", t)
-        if m and not info["Race_Date"]:
-            info["Race_Date"] = m.group(1).strip()
-
-        # Track name (broad list; can be extended)
-        m = re.search(
-            r"(ALBANY|ANGLE PARK|BALLARAT|BENDIGO|CANBERRA|CANNINGTON|CAPALABA|DUBBO|DAWSON|GRAFTON|GOSFORD|HEALESVILLE|HORSHAM|IPSWICH|LAUNCESTON|MANDURAH|MURRAY BRIDGE|NORTHAM|RICHMOND|SALE|SANDOWN|TAREE|THE MEADOWS|TOWNSVILLE|TRARALGON|WAGGA|WARRAGUL|WARRNAMBOOL|WENTWORTH PARK|YOUNG)",
-            t,
-            re.I,
-        )
-        if m and not info["Track"]:
-            info["Track"] = m.group(1).upper()
-
-        # Distance, e.g. "520m"
-        m = re.search(r"(\d{3,4})\s*m", t, re.I)
-        if m and not info["Distance_m"]:
-            info["Distance_m"] = m.group(1)
-
-        # Race grade, e.g. "Grade 5", "Grade Maiden", "Grade 5/6"
-        m = re.search(r"Grade\s*([A-Za-z0-9/ -]+)", t, re.I)
-        if m and not info["Race_Grade"]:
-            info["Race_Grade"] = m.group(1).strip()
-
-        # Race name fallback: first reasonably long line if Race_Name still blank
-        if not info["Race_Name"]:
-            if " " in t and len(t.split()) >= 3:
-                info["Race_Name"] = t
-
-    # Normalise date -> YYYY-MM-DD if possible
-    if info["Race_Date"]:
-        try:
-            info["Race_Date"] = pd.to_datetime(
-                info["Race_Date"], dayfirst=True
-            ).strftime("%Y-%m-%d")
-        except Exception:
-            # leave as-is if parsing fails
-            pass
-
-    return info
-
-
-def map_header(h: str) -> str:
-    """
-    Map dog-entry table header text to internal keys.
-    These internal keys are then normalized into SUMMARY_COLUMNS
-    via normalize_summary_fields.
-    """
-    h = h.upper()
-
-    # dog identity
-    if "DOG" in h:
-        return "Dog_Name"
-    if "BOX" in h:
-        return "Box"
-    if "TAB" in h:
-        return "Tab_No"
-    if "TRAINER" in h:
-        return "Trainer"
-    if "WT" in h or "WEIGHT" in h:
-        return "Weight_kg"
-    if "FORM" in h:
-        return "FF_Form"
-    if h == "BP" or "BOX NO" in h:
-        return "BP"
-
-    # pedigree
-    if "SIRE" in h:
-        return "Sire"
-    if "DAM" in h:
-        return "Dam"
-    if "OWNER" in h:
-        return "Owner"
-
-    # age/sex
-    if "AGE" in h:
-        return "Age"
-    if "SEX" in h or "GENDER" in h:
-        return "Sex"
-
-    # career stats
-    if "PRIZE" in h:
-        return "PrizeMoney"
-    if "WINS" in h:
-        return "Wins"
-    if "PLACES" in h:
-        return "Places"
-    if "STARTS" in h:
-        return "Starts"
-    if "DLR" in h:
-        return "DLR"
-    if "DLW" in h:
-        return "DLW"
-    if "RTC" in h:
-        return "RTC"
-
-    # fallback: title-case the header
-    return h.title()
-
-
-def parse_dog_table_rows(table_rows, meeting_info):
-    """
-    Given a single dog-entry table (header row + data rows) and the meeting_info dict,
-    return a list of per-dog dicts (one per row).
-    """
-    rows = []
-    headers = None
-
-    for r in table_rows:
-        if not headers:
-            headers = [h.strip().upper() for h in r]
+        dog_info = parse_dog_section(section)
+        if not dog_info.get("Dog_Name"):
             continue
-
-        row_dict = dict(meeting_info)
-
-        for idx, val in enumerate(r):
-            h = headers[idx] if idx < len(headers) else ""
-            key = map_header(h)
-            row_dict[key] = val.strip()
-
-        # Fallbacks if some keys are missing but raw headers exist
-        if "Dog_Name" not in row_dict and "DOG" in row_dict:
-            row_dict["Dog_Name"] = row_dict["DOG"]
-
-        if "Box" not in row_dict and "BOX" in row_dict:
-            row_dict["Box"] = row_dict["BOX"]
-
-        if "Trainer" not in row_dict and "TRAINER" in row_dict:
-            row_dict["Trainer"] = row_dict["TRAINER"]
-
-        rows.append(row_dict)
-
-    return rows
-
-
-def extract_dog_tables(blocks, meeting_info):
-    """
-    Scan all table blocks and extract any that look like dog-entry grids,
-    based on headers containing DOG/BOX/TAB/TRAINER.
-    """
-    all_rows = []
-
-    for b in blocks:
-        if b["type"] != "table":
-            continue
-
-        table_rows = b["rows"]
-        if len(table_rows) < 2:
-            continue
-
-        header_row = [c.upper() for c in table_rows[0]]
-        if any(x in header_row for x in ["DOG", "BOX", "TAB", "TRAINER"]):
-            parsed = parse_dog_table_rows(table_rows, meeting_info)
-            all_rows.extend(parsed)
-
-    return all_rows
-
-
-def parse_docx(path: str):
-    """
-    High-level orchestration for a single DOCX file.
-
-    Returns:
-        summary_df: pandas.DataFrame => one row per dog per meeting
-        hist_rows:  List[Dict]       => one row per historical run per dog
-    """
-    blocks = read_docx_tables(path)
-    meeting_info = parse_meeting_header(blocks, source_file=path)
-
-    # 1) Dog summary rows
-    dog_rows = extract_dog_tables(blocks, meeting_info)
-    summary_df = pd.DataFrame(dog_rows)
-    summary_df = normalize_summary_fields(summary_df)
-
-    # 2) History rows (delegated to src.parse_history)
-    hist_rows = parse_history_blocks(blocks, meeting_info, dog_rows)
-
-    return summary_df, hist_rows
+        # Combine meeting and dog info, then normalize
+        record = {**meeting_info, **dog_info}
+        # Ensure all expected keys exist; fill missing with empty string
+        for key in SUMMARY_COLUMNS:
+            record.setdefault(key, "")
+        # Normalize and append
+        records.append(normalize_summary_fields(record))
+    return records
