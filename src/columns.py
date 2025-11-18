@@ -1,86 +1,93 @@
-# Final 60-column schema (expanded: added Distance_m and Race_Grade)
+"""
+Locked 60-column schema for Dog Summary and History Snapshot.
+Updated to place the first five columns in this exact order:
+
+1. Race_Date
+2. Track
+3. Race_No
+4. Dog_Name
+5. Box
+"""
 
 SUMMARY_COLUMNS = [
-    # Group A – Identification & current race context
-    "Track",                # 1
-    "Race_Date",            # 2
-    "Race_No",              # 3
-    "Distance_m",           # 4 NEW
-    "Race_Grade",           # 5 NEW
-    "Box",                  # 6
-    "Dog_Name",             # 7
-    "Tab_No",               # 8
-    "FF_Form",              # 9
-    "BP",                   # 10
-    "A/S",                  # 11
-    "WT (kg)",              # 12
-    "Trainer",              # 13
-    "Sire",                 # 14
-    "Dam",                  # 15
-    "Owner",                # 16
+    # --- Updated start order (LOCKED) ---
+    "Race_Date",           # 1
+    "Track",               # 2
+    "Race_No",             # 3
+    "Dog_Name",            # 4
+    "Box",                 # 5
 
-    # Group B – Career / aggregated stats
-    "Career_W-P-S",         # 17
-    "Prize_Money",          # 18
-    "RTC",                  # 19
-    "DLR",                  # 20
-    "DLW",                  # 21
-    "Car_PM/s (G1)",        # 22
-    "12m_PM/s (G2)",        # 23
-    "API (G3)",             # 24
-    "RTC/km",               # 25
-    "Trainer_Win_%",        # 26
-    "Trainer_Place_%",      # 27
-    "Raced_Dist_W-P-S",     # 28
-    "Crs_W-P-S",            # 29
-    "Dist_W-P-S",           # 30
-    "FU_W-P-S",             # 31
-    "2U_W-P-S",             # 32
-    "DOD",                  # 33
+    # --- Group A – Dog Identification / Current Race ---
+    "Tab_No",              # 6
+    "FF_Form",             # 7
+    "BP",                  # 8
+    "A/S",                 # 9
+    "WT (kg)",             # 10
+    "Trainer",             # 11
+    "Sire",                # 12
+    "Dam",                 # 13
+    "Owner",               # 14
 
-    # Group B – Speed aggregation
-    "Avg_Speed_km/h",       # 34
-    "Min_Speed_km/h",       # 35
-    "Max_Speed_km/h",       # 36
-    "Hist_Count",           # 37
+    # --- Group B – Career/Aggregates ---
+    "Career_W-P-S",        # 15
+    "Prize_Money",         # 16
+    "RTC",                 # 17
+    "DLR",                 # 18
+    "DLW",                 # 19
+    "Car_PM/s (G1)",       # 20
+    "12m_PM/s (G2)",       # 21
+    "API (G3)",            # 22
+    "RTC/km",              # 23
+    "Trainer_Win_%",       # 24
+    "Trainer_Place_%",     # 25
+    "Raced_Dist_W-P-S",    # 26
+    "Crs_W-P-S",           # 27
+    "Dist_W-P-S",          # 28
+    "FU_W-P-S",            # 29
+    "2U_W-P-S",            # 30
+    "DOD",                 # 31
 
-    # Group C – Most recent run snapshot
-    "Hist_Date",            # 38
-    "Hist_Track",           # 39
-    "Hist_Distance",        # 40
-    "Hist_Finish_Pos",      # 41
-    "Hist_Margin_L",        # 42
-    "Hist_Race_Time",       # 43
-    "Hist_Sec_Time",        # 44
-    "Hist_Sec_Time_Adj",    # 45
-    "Hist_Speed_km/h",      # 46
-    "Hist_SOT",             # 47
-    "Hist_RST",             # 48
-    "Hist_BP",              # 49
-    "Hist_Odds",            # 50
-    "Hist_API",             # 51
-    "Hist_Prize_Won",       # 52
-    "Hist_Winner",          # 53
-    "Hist_2nd_Place",       # 54
-    "Hist_3rd_Place",       # 55
-    "Hist_Settled_Turn",    # 56
-    "Hist_Ongoing_Winners", # 57
-    "Hist_Track_Direction", # 58
+    # --- Group B – Speed Aggregation (computed) ---
+    "Avg_Speed_km/h",      # 32
+    "Min_Speed_km/h",      # 33
+    "Max_Speed_km/h",      # 34
+    "Hist_Count",          # 35
 
-    # Metadata
-    "Data_Source_File",     # 59
-    "Parse_Timestamp",      # 60
+    # --- Group C – Most Recent Run Snapshot ---
+    "Hist_Date",            # 36
+    "Hist_Track",           # 37
+    "Hist_Distance",        # 38
+    "Hist_Finish_Pos",      # 39
+    "Hist_Margin_L",        # 40
+    "Hist_Race_Time",       # 41
+    "Hist_Sec_Time",        # 42
+    "Hist_Sec_Time_Adj",    # 43
+    "Hist_Speed_km/h",      # 44
+    "Hist_SOT",             # 45
+    "Hist_RST",             # 46
+    "Hist_BP",              # 47
+    "Hist_Odds",            # 48
+    "Hist_API",             # 49
+    "Hist_Prize_Won",       # 50
+    "Hist_Winner",          # 51
+    "Hist_2nd_Place",       # 52
+    "Hist_3rd_Place",       # 53
+    "Hist_Settled_Turn",    # 54
+    "Hist_Ongoing_Winners", # 55
+    "Hist_Track_Direction", # 56
+
+    # --- Metadata ---
+    "Data_Source_File",     # 57
+    "Parse_Timestamp",      # 58
 ]
 
-DEDUPE_KEYS = ("Track", "Race_Date", "Race_No", "Box", "Dog_Name")
-
-# History row schema stays unchanged
+# History rows get their own schema (matching parse_history.py)
 HISTORY_COLUMNS = [
     "Track",
     "Race_Date",
     "Race_No",
-    "Box",
     "Dog_Name",
+    "Box",
     "Hist_Date",
     "Hist_Track",
     "Hist_Distance",
@@ -104,7 +111,3 @@ HISTORY_COLUMNS = [
     "Hist_Track_Direction",
     "Data_Source_File",
 ]
-
-# Legacy columns remain untouched for compatibility
-LEGACY_COLUMNS = []
-ALL_COLUMNS = SUMMARY_COLUMNS + LEGACY_COLUMNS
