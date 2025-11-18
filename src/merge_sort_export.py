@@ -1,63 +1,98 @@
-import os
+"""
+merge_sort_export.py — Enforces the locked SUMMARY_COLUMNS schema,
+sorts rows, dedupes, and writes CSV + Excel.
+
+Updated for new leading column order:
+Race_Date → Track → Race_No → Dog_Name → Box
+"""
+
 import pandas as pd
-from typing import List, Dict, Tuple
-
-from . import columns as C
-
-
-def _ensure_schema(rows: List[Dict[str, str]]) -> pd.DataFrame:
-    # Ensure all keys exist and extra keys are ignored; no assumptions -> blanks for missing
-    normalized = []
-    for r in rows:
-        row = {k: r.get(k, "") for k in C.SUMMARY_COLUMNS}
-        normalized.append(row)
-    df = pd.DataFrame(normalized, columns=C.SUMMARY_COLUMNS)
-    # Avoid NaN in exports
-    return df.fillna("")
+from datetime import datetime
+from src.columns import SUMMARY_COLUMNS
 
 
-def _ensure_history_schema(rows: List[Dict[str, str]]) -> pd.DataFrame:
-    normalized = []
-    for r in rows:
-        row = {k: r.get(k, "") for k in C.HISTORY_COLUMNS}
-        normalized.append(row)
-    df = pd.DataFrame(normalized, columns=C.HISTORY_COLUMNS)
-    return df.fillna("")
+def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure the DataFrame has exactly the columns in SUMMARY_COLUMNS,
+    in the correct locked order.
 
+    Any missing columns are added as blank strings.
+    Any extra columns are dropped.
+    """
 
-def _dedupe_sort(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    # Deduplicate on (Track, Race_Date, Race_No, Box, Dog_Name)
-    df = df.drop_duplicates(subset=list(C.DEDUPE_KEYS), keep="first")
+    # Insert missing columns
+    for col in SUMMARY_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
 
-    # Sorting keys: Track → Race_Date → Race_No → Box
-    df["_Race_No"] = pd.to_numeric(df["Race_No"], errors="coerce")
-    df["_Box"] = pd.to_numeric(df["Box"], errors="coerce")
-    df = df.sort_values(by=["Track", "Race_Date", "_Race_No", "_Box"], kind="mergesort")
-    df = df.drop(columns=["_Race_No", "_Box"])
+    # Keep only schema columns (drop everything else)
+    df = df[SUMMARY_COLUMNS]
+
     return df
 
 
-def enforce_schema_and_export(
-    summary_rows: List[Dict], history_rows: List[Dict]
-) -> Tuple[Dict[str, str], pd.DataFrame, pd.DataFrame]:
-    os.makedirs("outputs", exist_ok=True)
+def _dedupe_sort(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sort and dedupe the summary rows.
 
-    summary_df = _ensure_schema(summary_rows)
-    summary_df = _dedupe_sort(summary_df)
+    New sort order matches the new leading schema order:
 
-    history_df = _ensure_history_schema(history_rows)
+        1. Race_Date
+        2. Track
+        3. Race_No
+        4. Dog_Name
+        5. Box
 
-    # Export
-    excel_path = os.path.join("outputs", "all_dogs_master.xlsx")
-    csv_path = os.path.join("outputs", "all_dogs_master.csv")
+    This ensures stable ordering across runs and consistent export.
+    """
 
-    # CSV must match Dog_Summary sheet exactly
-    summary_df.to_csv(csv_path, index=False)
+    sort_keys = ["Race_Date", "Track", "Race_No", "Dog_Name", "Box"]
 
-    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, sheet_name="Dog_Summary", index=False)
-        history_df.to_excel(writer, sheet_name="Race_History", index=False)
+    # Convert Race_No to numeric where possible so race 10 > race 2
+    if "Race_No" in df.columns:
+        df["Race_No"] = pd.to_numeric(df["Race_No"], errors="ignore")
 
-    return {"excel": excel_path, "csv": csv_path}, summary_df, history_df
+    df = df.sort_values(sort_keys, na_position="last")
+
+    # Deduplicate on full key to avoid accidental duplicates
+    df = df.drop_duplicates(subset=sort_keys, keep="first")
+
+    return df
+
+
+def enforce_schema_and_export(summary_rows: list[dict], output_prefix: str):
+    """
+    Main export function.
+
+    summary_rows: list of dicts from aggregation layer
+    output_prefix: file prefix used for Excel + CSV (e.g. "outputs/all_dogs_master")
+
+    Produces:
+        <prefix>.csv
+        <prefix>.xlsx
+    """
+
+    df = pd.DataFrame(summary_rows)
+
+    # 1. Ensure correct schema
+    df = _ensure_schema(df)
+
+    # 2. Sort + dedupe
+    df = _dedupe_sort(df)
+
+    # 3. Apply parse timestamp column (if exists)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if "Parse_Timestamp" in df.columns:
+        df["Parse_Timestamp"] = timestamp
+
+    # 4. Write CSV + Excel
+    csv_path = f"{output_prefix}.csv"
+    xlsx_path = f"{output_prefix}.xlsx"
+
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    df.to_excel(xlsx_path, index=False)
+
+    print(f"✔ Exported CSV → {csv_path}")
+    print(f"✔ Exported Excel → {xlsx_path}")
+
+    return df
