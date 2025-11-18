@@ -1,196 +1,63 @@
+# src/parse_history.py
+
 import re
-import pandas as pd
+from datetime import datetime
+from columns import HISTORY_COLUMNS
 
-from src.columns import HISTORY_COLUMNS
-
-
-def _to_float_or_none(v):
-    if v is None:
-        return None
-    s = str(v).strip()
-    if s == "":
-        return None
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
-def _parse_time_to_seconds(s: str | None) -> float | None:
-    if s is None:
-        return None
-    text = str(s).strip()
-    if not text:
-        return None
-
-    # typical race time "30.12"
-    m = re.match(r"^(\d{2,3}\.\d{1,3})$", text)
-    if m:
-        try:
-            return float(m.group(1))
-        except Exception:
-            return None
-
-    # allow plain float
-    try:
-        return float(text)
-    except Exception:
-        return None
-
-
-def _compute_speed_kmh(dist_str: str | None, time_str: str | None) -> float | None:
-    dist_m = None
-    if dist_str is not None:
-        m = re.search(r"(\d{2,4})", str(dist_str))
-        if m:
-            try:
-                dist_m = float(m.group(1))
-            except Exception:
-                dist_m = None
-
-    t_s = _parse_time_to_seconds(time_str)
-
-    if dist_m is None or t_s is None or t_s == 0:
-        return None
-
-    return (dist_m * 3.6) / t_s
-
-
-def map_history_header(h: str) -> str | None:
-    h = h.upper()
-    if "DATE" in h:
-        return "Hist_Date"
-    if "TRACK" in h or "VENUE" in h:
-        return "Hist_Track"
-    if "DIST" in h or "DIS" in h:
-        return "Hist_Distance"
-    if "POS" in h or "PLC" in h or "PLACE" in h:
-        return "Hist_Finish_Pos"
-    if "MARGIN" in h or "MARG" in h:
-        return "Hist_Margin_L"
-    if "TIME" in h and "SEC" not in h:
-        return "Hist_Race_Time"
-    if "SEC" in h and "ADJ" not in h:
-        return "Hist_Sec_Time"
-    if "ADJ" in h:
-        return "Hist_Sec_Time_Adj"
-    if "SOT" in h or "TRK" in h:
-        return "Hist_SOT"
-    if "RST" in h:
-        return "Hist_RST"
-    if "BOX" in h or "BP" in h:
-        return "Hist_BP"
-    if "ODDS" in h or "SP" in h:
-        return "Hist_Odds"
-    if "API" in h:
-        return "Hist_API"
-    if "PRIZE" in h or "STAKE" in h or "STK" in h:
-        return "Hist_Prize_Won"
-    if "WINNER" in h:
-        return "Hist_Winner"
-    if "2ND" in h:
-        return "Hist_2nd_Place"
-    if "3RD" in h:
-        return "Hist_3rd_Place"
-    if "SETTLE" in h or "SETTL" in h:
-        return "Hist_Settled_Turn"
-    if "ONGOING" in h:
-        return "Hist_Ongoing_Winners"
-    if "DIR" in h or "RAIL" in h:
-        return "Hist_Track_Direction"
-    return None
-
-
-def parse_history_blocks(blocks, meeting_info, dog_rows):
+def parse_history_blocks(text):
     """
-    Full NSW/GBOTA compliant history parser.
-    Produces one HISTORY_COLUMNS dict per history run.
-    No silent drops.
+    Parse all historical run entries in the text.
+    Returns a list of dicts with history columns.
     """
-
-    # Known dog names
-    dog_names = sorted(
-        {r.get("Dog_Name", "").strip() for r in dog_rows if r.get("Dog_Name")},
-        key=len,
-        reverse=True,
+    history_records = []
+    # Regex to match lines like "2nd of 8 28/10/2025 Track ... Distance 400m ... Race Time 0:22.65 ... Prize Won $903"
+    hist_pattern = re.compile(
+        r'^(?P<finish>\d+)(?:st|nd|rd|th)\s+of\s+\d+\s+'
+        r'(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+'
+        r'(?P<track>\w+)\s+'
+        r'.*?Distance\s+(?P<distance>\d+)\s*m.*?'
+        r'Race Time\s+(?P<race_time>[0-9:]+\.?\d*)\s*Sec.*?'
+        r'Prize Won\s*\$(?P<prize>\d+)'
     )
-
-    # Box lookup per dog
-    dog_to_box = {
-        (r.get("Dog_Name", "").strip()): (r.get("Box") or "").strip()
-        for r in dog_rows
-        if r.get("Dog_Name")
-    }
-
-    hist_rows = []
-    current_dog = None
-
-    for b in blocks:
-
-        # Detect dog context in paragraphs
-        if b["type"] == "paragraph":
-            text = b["text"]
-            for name in dog_names:
-                if re.search(r"\b" + re.escape(name) + r"\b", text):
-                    current_dog = name
-                    break
-
-        # Parse history table
-        elif b["type"] == "table":
-
-            rows = b["rows"]
-            if len(rows) < 2:
-                continue
-
-            # Identify history table headers
-            header = [c.upper() for c in rows[0]]
-            header_str = " ".join(header)
-
-            # Must include DATE + (DIST or TIME or MARGIN)
-            if "DATE" not in header_str:
-                continue
-            if not any(x in header_str for x in ["DIST", "DIS", "TIME", "MARGIN"]):
-                continue
-
-            # Map header columns
-            col_map = {}
-            for idx, h in enumerate(header):
-                key = map_history_header(h)
-                if key:
-                    col_map[idx] = key
-
-            # Require essential fields
-            has_date = any(v == "Hist_Date" for v in col_map.values())
-            has_other = any(
-                v in ["Hist_Distance", "Hist_Race_Time"] for v in col_map.values()
-            )
-            if not (has_date and has_other):
-                continue
-
-            # Process each row
-            for r in rows[1:]:
-                hist = {k: "" for k in HISTORY_COLUMNS}
-
-                hist["Track"] = meeting_info.get("Track", "")
-                hist["Race_Date"] = meeting_info.get("Race_Date", "")
-                hist["Race_No"] = meeting_info.get("Race_No", "")
-                hist["Dog_Name"] = current_dog or ""
-                hist["Box"] = dog_to_box.get(current_dog or "", "")
-                hist["Data_Source_File"] = meeting_info.get("Data_Source_File", "")
-
-                # Column values
-                for idx, val in enumerate(r):
-                    if idx not in col_map:
-                        continue
-                    key = col_map[idx]
-                    hist[key] = val.strip()
-
-                # Compute Hist_Speed_km/h
-                spd = _compute_speed_kmh(
-                    hist.get("Hist_Distance"), hist.get("Hist_Race_Time")
-                )
-                hist["Hist_Speed_km/h"] = round(spd, 3) if spd is not None else ""
-
-                hist_rows.append(hist)
-
-    return hist_rows
+    for line in text.splitlines():
+        m = hist_pattern.search(line)
+        if not m:
+            continue
+        rec = {}
+        # Position
+        rec["Hist_Finish_Pos"] = int(m.group("finish"))
+        # Date (convert to ISO)
+        raw_date = m.group("date")
+        rec["Hist_Date"] = datetime.strptime(raw_date, "%d/%m/%Y").strftime("%Y-%m-%d")
+        # Track
+        rec["Hist_Track"] = m.group("track")
+        # Distance
+        dist = int(m.group("distance"))
+        rec["Hist_Distance_m"] = dist
+        # Race time (format e.g. "0:22.65" or "22.65")
+        time_str = m.group("race_time")
+        if ":" in time_str:
+            # if format mm:ss.ss or similar
+            parts = time_str.split(':')
+            secs = float(parts[-1])
+        else:
+            secs = float(time_str)
+        rec["Hist_Race_Time_s"] = secs
+        # Prize won
+        rec["Hist_Prize_Won"] = int(m.group("prize"))
+        # Odds (if present)
+        odds_match = re.search(r'Odds\s*([\d\.]+)', line)
+        if odds_match:
+            rec["Hist_Odds"] = float(odds_match.group(1))
+        else:
+            rec["Hist_Odds"] = None
+        # Compute speed (m/s) if possible
+        if dist and secs and secs != 0:
+            rec["Hist_Speed_mps"] = round(dist / secs, 2)
+        else:
+            rec["Hist_Speed_mps"] = None
+        # Ensure all history columns are present
+        for key in HISTORY_COLUMNS:
+            rec.setdefault(key, "")
+        history_records.append(rec)
+    return history_records
